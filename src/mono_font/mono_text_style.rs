@@ -35,6 +35,9 @@ pub struct MonoTextStyle<'a, C> {
     /// Text color.
     pub text_color: Option<C>,
 
+    /// Scale factor.
+    pub scale_factor: u32,
+
     /// Background color.
     pub background_color: Option<C>,
 
@@ -49,13 +52,20 @@ pub struct MonoTextStyle<'a, C> {
 }
 
 impl<'a, C: PixelColor> MonoTextStyle<'a, C> {
-    /// Creates a text style with transparent background.
-    pub fn new(font: &'a MonoFont<'a>, text_color: C) -> Self {
+    /// Creates a scaled text style with transparent background.
+    pub fn new_scaled(font: &'a MonoFont<'a>, text_color: C, scale_factor: u32) -> Self {
         MonoTextStyleBuilder::new()
             .font(font)
             .text_color(text_color)
+            .scale_factor(scale_factor)
             .build()
     }
+
+    /// Creates a text style with transparent background.
+    pub fn new(font: &'a MonoFont<'a>, text_color: C) -> Self {
+        Self::new_scaled(font, text_color, 1u32)
+    }
+
 
     /// Returns `true` if the style is transparent.
     ///
@@ -74,8 +84,8 @@ impl<'a, C: PixelColor> MonoTextStyle<'a, C> {
         mut position: Point,
         text: &'t str,
     ) -> impl Iterator<Item = (Point, LineElement)> + 't {
-        let char_width = self.font.character_size.width as i32;
-        let spacing_width = self.font.character_spacing as i32;
+        let char_width = self.font.character_size.width as i32 * self.scale_factor as i32;
+        let spacing_width = self.font.character_spacing as i32 * self.scale_factor as i32;
 
         let mut chars = text.chars();
         let mut next_char = chars.next();
@@ -167,14 +177,11 @@ impl<'a, C: PixelColor> MonoTextStyle<'a, C> {
     fn baseline_offset(&self, baseline: Baseline) -> i32 {
         match baseline {
             Baseline::Top => 0,
-            Baseline::Bottom => self
-                .font
-                .character_size
-                .height
-                .saturating_sub(1)
-                .saturating_as(),
+            Baseline::Bottom => {
+                (self.font.character_size.height * self.scale_factor).saturating_sub(1).saturating_as()
+            }
             Baseline::Middle => {
-                (self.font.character_size.height.saturating_sub(1) / 2).saturating_as()
+                ((self.font.character_size.height * self.scale_factor).saturating_sub(1) / 2).saturating_as()
             }
             Baseline::Alphabetic => self.font.baseline.saturating_as(),
         }
@@ -243,7 +250,7 @@ impl<C: PixelColor> TextRenderer for MonoTextStyle<'_, C> {
         if width != 0 {
             if let Some(background_color) = self.background_color {
                 target.fill_solid(
-                    &Rectangle::new(position, Size::new(width, self.font.character_size.height)),
+                    &Rectangle::new(position, Size::new(width, self.line_height())),
                     background_color,
                 )?;
             }
@@ -258,13 +265,14 @@ impl<C: PixelColor> TextRenderer for MonoTextStyle<'_, C> {
         let bb_position = position - Point::new(0, self.baseline_offset(baseline));
 
         let bb_width = (text.len() as u32
-            * (self.font.character_size.width + self.font.character_spacing))
-            .saturating_sub(self.font.character_spacing);
+            * (self.font.character_size.width + self.font.character_spacing)
+            * self.scale_factor)
+            .saturating_sub(self.font.character_spacing * self.scale_factor);
 
         let bb_height = if self.underline_color != DecorationColor::None {
-            self.font.underline.height + self.font.underline.offset
+            (self.font.underline.height + self.font.underline.offset) * self.scale_factor
         } else {
-            self.font.character_size.height
+            self.line_height()
         };
 
         let bb_size = Size::new(bb_width, bb_height);
@@ -276,7 +284,7 @@ impl<C: PixelColor> TextRenderer for MonoTextStyle<'_, C> {
     }
 
     fn line_height(&self) -> u32 {
-        self.font.character_size.height
+        self.font.character_size.height * self.scale_factor
     }
 }
 
@@ -392,10 +400,18 @@ impl<C> MonoTextStyleBuilder<'_, C> {
                 font: &super::NULL_FONT,
                 background_color: None,
                 text_color: None,
+                scale_factor: 1u32,
                 underline_color: DecorationColor::None,
                 strikethrough_color: DecorationColor::None,
             },
         }
+    }
+
+    /// Sets the scale factor.
+    pub fn scale_factor(mut self, scale_factor: u32) -> Self {
+        self.style.scale_factor = scale_factor;
+
+        self
     }
 }
 
@@ -406,6 +422,7 @@ impl<'a, C> MonoTextStyleBuilder<'a, C> {
             font,
             background_color: self.style.background_color,
             text_color: self.style.text_color,
+            scale_factor: self.style.scale_factor,
             underline_color: self.style.underline_color,
             strikethrough_color: self.style.strikethrough_color,
         };
@@ -537,6 +554,7 @@ mod tests {
             MonoTextStyle {
                 font: &FONT_10X20,
                 text_color: None,
+                scale_factor: 1u32,
                 background_color: None,
                 underline_color: DecorationColor::None,
                 strikethrough_color: DecorationColor::None,
@@ -949,6 +967,22 @@ mod tests {
     }
 
     #[test]
+    fn underlined_scaled_character_dimensions() {
+        let style = MonoTextStyleBuilder::new()
+            .font(&SPACED_FONT)
+            .text_color(BinaryColor::On)
+            .scale_factor(2)
+            .underline()
+            .build();
+
+        
+        assert_eq!(
+            Text::with_baseline("#", Point::zero(), style, Baseline::Top).bounding_box(),
+            Rectangle::new(Point::zero(), Size::new(2*6, 2*10)),
+        );
+    }
+
+    #[test]
     fn control_characters() {
         let style = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
 
@@ -980,6 +1014,7 @@ mod tests {
             style,
             MonoTextStyle {
                 text_color: None,
+                scale_factor: 1,
                 background_color: Some(BinaryColor::On),
                 underline_color: DecorationColor::TextColor,
                 strikethrough_color: DecorationColor::Custom(BinaryColor::On),
